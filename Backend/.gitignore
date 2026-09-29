@@ -1,5 +1,6 @@
-node_modules
-dist
 .env
-uploads/*
-!uploads/.gitkeep
+__pycache__/
+*.pyc
+.venv/
+storage/
+.pytest_cache/

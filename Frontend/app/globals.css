@@ -50,3 +50,18 @@ button { cursor: pointer; }
 .chat-input input:focus { border-color: var(--sage); }
 @media (max-width: 480px) { .chat-overlay { padding: 12px; }.chat-header, .chat-messages, .chat-input { padding-left: 16px; padding-right: 16px; }.chat-input { flex-wrap: wrap; }.chat-input .button { flex: 1; } }
 @layer base { * { border-color: var(--line); } }
+
+/* ── API state helpers (added for the FastAPI backend) ── */
+.api-error { margin: 12px 0; padding: 14px 16px; border-left: 3px solid #aa8e6d; background: #e7dacb; color: #806b53; font-size: 12px; display: flex; align-items: center; gap: 14px; justify-content: space-between; }
+.api-error button { border: 1px solid #aa8e6d; background: transparent; color: inherit; padding: 6px 10px; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.loading-state { padding: 60px 20px; text-align: center; color: var(--faint); font-size: 10px; letter-spacing: .14em; }
+.loading-state:before { content: ''; display: block; width: 18px; height: 18px; margin: 0 auto 14px; border: 2px solid var(--line); border-top-color: var(--sage); border-radius: 50%; animation: ec-spin .8s linear infinite; }
+@keyframes ec-spin { to { transform: rotate(360deg); } }
+.inline-note { color: #806b53; font-size: 11px; margin: 8px 0 0; }
+.nl-input { flex: 1; min-width: 0; border: 0; border-bottom: 1px solid #c9bfb1; background: transparent; padding: 7px 0; margin-top: 4px; font-size: 14px; color: var(--ink); outline: none; }
+.nl-input:focus { border-bottom-color: var(--sage); }
+.chat-message.thinking { opacity: .6; font-style: italic; }
+.selector-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
+.selector-row button { border: 1px solid var(--line); background: transparent; padding: 5px 9px; font-size: 9px; letter-spacing: .06em; color: var(--muted); }
+.selector-row button.active { background: var(--sage); border-color: var(--sage); color: var(--cream); }
+.rule-card.off { opacity: .5; }
