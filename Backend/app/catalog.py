@@ -145,7 +145,7 @@ def _finish(p: dict) -> dict:
 
 
 CATALOG: dict[str, dict] = {p["slug"]: _finish(p) for p in (_SCHOLARSHIP, _RATION, _LAKSHMI)}
-DEFAULT_SLUG = "scholarship-eligibility"
+DEFAULT_SLUG = "delhi-ration-food-security"
 
 
 def fresh_catalog() -> dict[str, dict]:

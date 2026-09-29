@@ -24,7 +24,7 @@ class Settings:
         self.anthropic_key = e("ANTHROPIC_API_KEY", "")
         self.anthropic_model = e("ANTHROPIC_MODEL", "claude-sonnet-5-5")
         self.gemini_key = e("GEMINI_API_KEY", "")
-        self.gemini_model = e("GEMINI_MODEL", "gemini-2.0-flash")
+        self.gemini_model = e("GEMINI_MODEL", "gemini-3.8-flash")
         self.demo_mode = _flag(e("DEMO_MODE"), False)
         self.max_population = int(e("MAX_POPULATION_SIZE", "100000"))
         self.max_upload_bytes = int(float(e("MAX_UPLOAD_SIZE_MB", "10")) * 1024 * 1024)

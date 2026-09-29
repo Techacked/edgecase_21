@@ -7,16 +7,18 @@ import {
 } from 'lucide-react'
 import { api, errMsg, reportUrl, useApi, useDebounced } from '@/lib/api'
 
-type Page = 'Overview' | 'Policy Lab' | 'Simulation' | 'What-If Lab' | 'Reports'
+type Page = 'Overview' | 'Policy Lab' | 'Simulation' | 'What-If Lab' | 'Policy Advisory' | 'Reports'
 type SimTab = 'Overview' | 'Edge Cases' | 'Cliffs' | 'Conflicts' | 'Fairness'
 type CaseFilter = 'all' | 'eligible' | 'rejected' | 'edge'
 type Mode = 'STRESS_TEST' | 'BOUNDARY_SCAN' | 'FAIRNESS_AUDIT'
 type Api = { data: any; error: string; loading: boolean }
 type Ctx = { ov: Api; retry: () => void; slug: string; simId?: string; policy: any }
 
-const DEFAULT_SLUG = 'scholarship-eligibility'
+const DEFAULT_SLUG = 'delhi-ration-food-security'
 const MODES: Mode[] = ['STRESS_TEST', 'BOUNDARY_SCAN', 'FAIRNESS_AUDIT']
 const MODE_LABEL: Record<Mode, string> = { STRESS_TEST: 'Stress Test', BOUNDARY_SCAN: 'Boundary Scan', FAIRNESS_AUDIT: 'Fairness Audit' }
+const RUN_STEPS = ['Preparing synthetic population...', 'Applying policy rules...', 'Testing boundary conditions...', 'Testing rule conflicts...', 'Analyzing outcomes...', 'Generating edge cases...', 'Calculating fairness signals...']
+const UPLOAD_STEPS = ['Extracting Policy...', 'Analyzing Rules...', 'Detecting Variables...', 'Validating Policy...']
 const num = (x: number) => (x ?? 0).toLocaleString('en-US')
 const pad2 = (x: number) => String(x ?? 0).padStart(2, '0')
 
@@ -25,6 +27,7 @@ const navItems: { label: Page; icon: typeof LayoutDashboard }[] = [
   { label: 'Policy Lab', icon: FlaskConical },
   { label: 'Simulation', icon: BarChart3 },
   { label: 'What-If Lab', icon: SlidersHorizontal },
+  { label: 'Policy Advisory', icon: Target },
   { label: 'Reports', icon: FileText },
 ]
 
@@ -50,8 +53,12 @@ function ErrorBox({ message, onRetry }: { message: string; onRetry?: () => void 
 /** Shows loading / error / children once overview data is ready. */
 function Gate({ ctx, children }: { ctx: Ctx; children: (ov: any) => React.ReactNode }) {
   if (ctx.ov.error) return <ErrorBox message={ctx.ov.error} onRetry={ctx.retry} />
-  if (!ctx.ov.data) return <Loading />
+  if (!ctx.ov.data || ctx.ov.data.policy?.slug !== ctx.slug || (ctx.simId && ctx.ov.data.simulation?.id !== ctx.simId)) return <Loading />
   return <>{children(ctx.ov.data)}</>
+}
+function currentOverview(ctx: Ctx) {
+  const data = ctx.ov.data
+  return data?.policy?.slug === ctx.slug && (!ctx.simId || data.simulation?.id === ctx.simId) ? data : null
 }
 
 /* ───────────────────────── Overview ───────────────────────── */
@@ -96,9 +103,9 @@ function PolicyLab({ ctx, policies, selectPolicy, refreshPolicies, setPage }: { 
     try { adopt(await api.extractText(pasteText)); setPasteOpen(false); setPasteText(''); setUploadedFile('') }
     catch (e) { setError(errMsg(e)) } finally { setBusy('') }
   }
-  const submitPdf = async (file: File) => {
+  const submitPolicyFile = async (file: File) => {
     setBusy('pdf'); setError(''); setUploadedFile(file.name)
-    try { adopt(await api.extractPdf(file)) } catch (e) { setError(errMsg(e)); setUploadedFile('') } finally { setBusy('') }
+    try { adopt(await api.uploadPolicy(file)) } catch (e) { setError(errMsg(e)); setUploadedFile('') } finally { setBusy('') }
   }
   const confirm = async () => {
     setBusy('confirm'); setError('')
@@ -114,7 +121,7 @@ function PolicyLab({ ctx, policies, selectPolicy, refreshPolicies, setPage }: { 
   return <div className="page-content"><div className="page-intro"><div><span className="eyebrow sage-text">POLICY WORKSPACE / 02</span><h1>Policy Lab</h1><p>Turn policy language into executable rules.</p></div><StatusPill>{busy ? 'AI ENGINE WORKING' : 'AI ENGINE READY'}</StatusPill></div>
     <div className="policy-toolbar"><div><span className="eyebrow">ACTIVE POLICY</span><div className="select-wrap"><select value={ctx.slug} onChange={e => selectPolicy(e.target.value)}>{policies.map(p => <option key={p.slug} value={p.slug}>{p.name}</option>)}</select><ChevronDown size={16} /></div></div>
       <div className="toolbar-actions">
-        <label className="button secondary file-button"><Upload size={15} /> {busy === 'pdf' ? 'Reading PDF…' : uploadedFile || 'Upload Policy PDF'}<input type="file" accept="application/pdf,.pdf" onChange={event => { const file = event.target.files?.[0]; if (file) submitPdf(file); event.target.value = '' }} /></label>
+        <label className="button secondary file-button"><Upload size={15} /> {busy === 'pdf' ? 'Reading policy…' : uploadedFile || 'Upload Policy'}<input type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={event => { const file = event.target.files?.[0]; if (file) submitPolicyFile(file); event.target.value = '' }} /></label>
         <button className="button secondary" onClick={() => setPasteOpen(true)}><Plus size={15} /> Paste Policy Text</button>
         <button className="button primary" onClick={() => { selectPolicy(DEFAULT_SLUG); setUploadedFile('') }}>Use Demo Policy</button>
       </div></div>
@@ -134,27 +141,94 @@ function PolicyLab({ ctx, policies, selectPolicy, refreshPolicies, setPage }: { 
 }
 
 /* ───────────────────────── Simulation ───────────────────────── */
-function Simulation({ ctx, setPage, onNewSim }: { ctx: Ctx; setPage: (p: Page) => void; onNewSim: (id: string) => void }) {
+function Simulation({ ctx, setPage, onNewSim, onPolicySelected, onSimulationSelected }: { ctx: Ctx; setPage: (p: Page) => void; onNewSim: (id: string) => void; onPolicySelected: (slug: string) => void; onSimulationSelected: (id: string, slug: string) => void }) {
   const [tab, setTab] = useState<SimTab>('Overview')
   const [selected, setSelected] = useState<any>(null)
   const [caseFilter, setCaseFilter] = useState<CaseFilter>('all')
   const [isRunning, setIsRunning] = useState(false)
   const [runError, setRunError] = useState('')
   const [mode, setMode] = useState<Mode>('STRESS_TEST')
+  const [datasetError, setDatasetError] = useState('')
+  const [datasetInfo, setDatasetInfo] = useState<string>('')
+  const [datasetId, setDatasetId] = useState<string | undefined>(undefined)
+  const [activeUpload, setActiveUpload] = useState<any>(null)
+  const [uploadStage, setUploadStage] = useState<number | null>(null)
+  const [runStep, setRunStep] = useState(0)
+  const [historyTick, setHistoryTick] = useState(0)
+  const history = useApi(() => api.simulations(), [historyTick])
+  useEffect(() => {
+    setDatasetId(undefined)
+    setDatasetInfo('')
+    setDatasetError('')
+  }, [ctx.slug])
+  useEffect(() => {
+    if (!isRunning) return
+    const timer = window.setInterval(() => setRunStep(step => Math.min(step + 1, RUN_STEPS.length - 1)), 800)
+    return () => window.clearInterval(timer)
+  }, [isRunning])
   const showCases = (filter: CaseFilter) => { setCaseFilter(filter); setTab('Edge Cases') }
   const runSimulation = async () => {
-    setIsRunning(true); setRunError('')
-    try { const res = await api.runSimulation(ctx.slug, mode); onNewSim(res.data.id) } catch (e) { setRunError(errMsg(e)) } finally { setIsRunning(false) }
+    setIsRunning(true); setRunStep(0); setRunError(''); setDatasetError('')
+    try {
+      const res = await api.runSimulation(ctx.slug, mode, 100000, datasetId)
+      onNewSim(res.data.id)
+      setHistoryTick(tick => tick + 1)
+      setDatasetInfo(res.data.dataSource === 'UPLOADED' ? 'Using uploaded dataset for this policy.' : 'Using a synthetic population generated for this policy.')
+    } catch (e) { setRunError(errMsg(e)) } finally { setIsRunning(false) }
   }
   const cycleMode = () => setMode(m => MODES[(MODES.indexOf(m) + 1) % MODES.length])
+  const generatePopulation = async () => {
+    setDatasetError(''); setDatasetInfo('')
+    try {
+      const res = await api.generateSyntheticData(ctx.slug, 10000, 12345)
+      setDatasetId(res.data.id)
+      setDatasetInfo(`Generated ${res.data.recordCount.toLocaleString('en-US')} synthetic records for ${ctx.policy?.name ?? 'this policy'}.`)
+    } catch (e) { setDatasetError(errMsg(e)) }
+  }
+  const uploadPolicyFile = async (file: File) => {
+    setDatasetError(''); setDatasetInfo(''); setUploadStage(0)
+    const timer = window.setInterval(() => setUploadStage(stage => stage === null ? null : Math.min(stage + 1, UPLOAD_STEPS.length - 1)), 700)
+    try {
+      const res = await api.uploadPolicy(file)
+      const uploadedPolicy = res.data.policy
+      const policySlug = uploadedPolicy?.slug || uploadedPolicy?.policyId || ctx.slug
+      setActiveUpload(uploadedPolicy)
+      setDatasetId(undefined)
+      onPolicySelected(policySlug)
+    } catch (e) { setDatasetError(errMsg(e)) }
+    finally { window.clearInterval(timer); setUploadStage(null) }
+  }
+  const displayedPolicy = ctx.policy?.slug === ctx.slug ? ctx.policy : activeUpload?.slug === ctx.slug ? activeUpload : null
+  const policyVersion = displayedPolicy?.currentVersion
+  const readyRules: any[] = policyVersion?.rules ?? []
+  const readyVariables: any[] = policyVersion?.variables ?? []
   const tabs: SimTab[] = ['Overview', 'Edge Cases', 'Cliffs', 'Conflicts', 'Fairness']
-  const ov = ctx.ov.data
+  const ov = currentOverview(ctx)
   const r = ov?.simulation.results
   const simId: string | undefined = ov?.simulation.id
-  return <div className="page-content"><div className="page-intro"><div><span className="eyebrow sage-text">ANALYSIS WORKSPACE / 03</span><h1>Simulation Engine</h1><p>Crash-test <strong>{ov?.policy.name ?? ctx.policy?.name ?? '…'}</strong> against a synthetic population.</p></div><StatusPill>{isRunning ? 'ENGINE RUNNING' : 'SIMULATED DATA'}</StatusPill></div>
-    <div className="simulation-controls panel"><div><span className="eyebrow">SYNTHETIC POPULATION</span><strong className="control-value">{r ? num(r.totalTested) : '100,000'}</strong></div><div className="control-divider" /><div><span className="eyebrow">SIMULATION MODE</span><button type="button" className="mode-select" onClick={cycleMode} aria-label="Change simulation mode">{MODE_LABEL[mode]} <ChevronDown size={14} /></button></div><button className="button primary run-button" onClick={runSimulation} disabled={isRunning}><Play size={14} fill="currentColor" /> {isRunning ? 'Running...' : 'Run Simulation'}</button><span className="run-time">{isRunning ? 'PROCESSING...' : `LAST RUN ${ov?.lastRun ?? '--:--'}`}<br /><b>{isRunning ? 'CALCULATING' : ov ? 'COMPLETED' : 'LOADING'}</b></span></div>
+  return <div className="page-content"><div className="page-intro"><div><span className="eyebrow sage-text">ANALYSIS WORKSPACE / 03</span><h1>Simulation Engine</h1><p>Crash-test <strong>{displayedPolicy?.name ?? ov?.policy.name ?? '…'}</strong> against the active policy rules.</p></div><StatusPill>{isRunning ? 'ENGINE RUNNING' : ov ? 'SIMULATION COMPLETE' : 'POLICY READY'}</StatusPill></div>
+    <div className="simulation-controls panel"><div><span className="eyebrow">ACTIVE POLICY</span><strong className="control-value">{displayedPolicy?.name ?? 'Loading policy'}</strong></div><div className="control-divider" /><div><span className="eyebrow">SIMULATION MODE</span><button type="button" className="mode-select" onClick={cycleMode} aria-label="Change simulation mode">{MODE_LABEL[mode]} <ChevronDown size={14} /></button></div><button className="button primary run-button" onClick={runSimulation} disabled={isRunning || uploadStage !== null}><Play size={14} fill="currentColor" /> {isRunning ? 'Running...' : 'Run Simulation'}</button><span className="run-time">{isRunning ? 'PROCESSING...' : `LAST RUN ${ov?.lastRun ?? '--:--'}`}<br /><b>{isRunning ? 'IN PROGRESS' : ov ? 'COMPLETED' : 'READY'}</b></span></div>
+    <div className="panel" style={{ marginTop: 16, padding: 16 }}>
+      <div className="section-header"><div><span className="eyebrow">POLICY INPUT</span><h2>Upload policy and generate demo data</h2></div></div>
+      <div className="toolbar-actions" style={{ justifyContent: 'flex-start', marginTop: 8 }}>
+        <label className="button secondary file-button"><Upload size={15} /> {uploadStage !== null ? UPLOAD_STEPS[uploadStage] : 'Upload Policy'}<input type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" disabled={uploadStage !== null} onChange={event => { const file = event.target.files?.[0]; if (file) uploadPolicyFile(file); event.target.value = '' }} /></label>
+        <button className="button secondary" onClick={generatePopulation} disabled={!displayedPolicy || uploadStage !== null || isRunning}><Sparkles size={15} /> Generate Demo Data</button>
+      </div>
+      {datasetInfo && <p className="inline-note" style={{ marginTop: 12 }}>{datasetInfo}</p>}
+      {datasetError && <ErrorBox message={datasetError} />}
+      {uploadStage !== null && <p className="inline-note" role="status" aria-live="polite" style={{ marginTop: 12 }}>{UPLOAD_STEPS[uploadStage]}</p>}
+      {displayedPolicy && <div className="policy-ready" role="status" style={{ marginTop: 14, padding: 14, borderTop: '1px solid var(--line)' }}>
+        <div className="eyebrow sage-text">✓ POLICY READY</div>
+        <strong style={{ display: 'block', marginTop: 6 }}>{displayedPolicy.name}</strong>
+        <small>Version {displayedPolicy.policyVersion ?? '1.0'} · {readyRules.length} rules · {readyVariables.length} variables · {Object.keys(policyVersion?.thresholds ?? {}).length} thresholds · {(displayedPolicy.exceptions ?? []).length} exceptions</small>
+      </div>}
+    </div>
     {runError && <ErrorBox message={runError} />}
+    {isRunning && <div className="panel" role="status" aria-live="polite" style={{ marginTop: 14, padding: 14 }}>{RUN_STEPS.map((step, index) => <div key={step} style={{ color: index === runStep ? 'var(--sage)' : index < runStep ? 'var(--ink)' : 'var(--muted)', padding: '3px 0' }}>{index < runStep ? '✓ ' : index === runStep ? '• ' : '  '}{step}</div>)}</div>}
+    <SimulationHistory history={history} onSelect={onSimulationSelected} />
     <Gate ctx={ctx}>{() => <>
+      <div className="policy-result-identity panel"><div><span className="eyebrow">POLICY</span><strong>{ov.policy.name}</strong></div><div><span className="eyebrow">SIMULATION</span><strong>{ov.simulation.id.slice(0, 15)}</strong></div><div><span className="eyebrow">RECORDS</span><strong>{num(r.totalTested)}</strong></div><div><span className="eyebrow">POLICY VERSION</span><strong>{ov.simulation.policyVersion ?? '1.0'}</strong></div></div>
+      <button className="text-button" style={{ margin: '12px 0' }} onClick={() => setPage('Policy Advisory')}>Generate Policy Advisory <ArrowRight size={14} /></button>
       <div className="metrics-grid six"><MetricCard label="Cases tested" value={num(r.totalTested)} note={ov.simulation.mode.replace('_', ' ')} onClick={() => showCases('all')} /><MetricCard label="Eligible" value={num(r.eligibleCount)} note={`${r.eligibleRate}% coverage`} accent onClick={() => showCases('eligible')} /><MetricCard label="Rejected" value={num(r.rejectedCount)} note={`${r.rejectedRate}% of cases`} onClick={() => showCases('rejected')} /><MetricCard label="Edge cases" value={num(r.edgeCaseCount)} note={`${r.edgeCaseRate}% of cases`} onClick={() => showCases('edge')} /><MetricCard label="Policy cliffs" value={pad2(r.cliffCount)} note={`${r.cliffHighCount} high severity`} onClick={() => setTab('Cliffs')} /><MetricCard label="Rule conflicts" value={pad2(r.conflictCount)} note={`${r.conflictUnresolved} unresolved`} onClick={() => setTab('Conflicts')} /></div>
       <div className="tabs-bar">{tabs.map(item => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}{item === 'Edge Cases' && <span>{num(r.edgeCaseCount)}</span>}{item === 'Cliffs' && <span>{pad2(r.cliffCount)}</span>}{item === 'Conflicts' && <span>{pad2(r.conflictCount)}</span>}</button>)}</div>
       {tab === 'Overview' && <SimulationOverview r={r} setPage={setPage} onSearch={() => showCases('all')} />}
@@ -165,6 +239,22 @@ function Simulation({ ctx, setPage, onNewSim }: { ctx: Ctx; setPage: (p: Page) =
     </>}</Gate>
     {selected && <CaseDrawer c={selected} onClose={() => setSelected(null)} />}
   </div>
+}
+
+function SimulationHistory({ history, onSelect }: { history: Api; onSelect: (id: string, slug: string) => void }) {
+  const simulations: any[] = history.data ?? []
+  if (history.error) return <ErrorBox message={history.error} />
+  if (!simulations.length) return null
+  return <section className="simulation-history panel" style={{ marginTop: 16, padding: 16 }}>
+    <SectionHeader eyebrow="SAVED RUNS" title="Simulation history" />
+    <div>{simulations.map(sim => <button key={sim.id} type="button" onClick={() => onSelect(sim.id, sim.policySlug)} aria-label={`Open ${sim.policyName} simulation`}
+      style={{ width: '100%', display: 'grid', gridTemplateColumns: 'minmax(160px, 1.4fr) repeat(3, minmax(90px, 1fr))', gap: 12, alignItems: 'center', padding: '12px 4px', textAlign: 'left', border: 0, borderTop: '1px solid var(--line)', background: 'transparent', color: 'inherit', cursor: 'pointer' }}>
+      <span><strong>{sim.policyName}</strong><small style={{ display: 'block', color: 'var(--muted)' }}>v{sim.policyVersion} · {sim.status}</small></span>
+      <span>{num(sim.populationSize)} records</span>
+      <span>{sim.completedAt?.slice(0, 16).replace('T', ' ')}</span>
+      <span className="text-button">View results <ArrowRight size={14} /></span>
+    </button>)}</div>
+  </section>
 }
 
 function SimulationOverview({ r, setPage, onSearch }: { r: any; setPage: (p: Page) => void; onSearch: () => void }) {
@@ -242,7 +332,7 @@ function Fairness({ simId }: { simId: string }) {
   if (res.error) return <ErrorBox message={res.error} />
   if (!res.data) return <Loading />
   const f = res.data
-  return <div className="fairness-grid"><div className="panel fairness-panel"><SectionHeader title="Coverage by income band"><span className="panel-caption">SIMULATED / SYNTHETIC</span></SectionHeader><div className="coverage-chart">{f.bands.map((b: any) => <div className="chart-column" key={b.band}><div className="column-bar" style={{ height: `${b.height}%` }}><span>{b.height}%</span></div><small>{b.band}</small></div>)}</div></div>
+  return <div className="fairness-grid"><div className="panel fairness-panel"><SectionHeader title={`Coverage by ${String(f.variable ?? 'policy').replace(/_/g, ' ')} band`}><span className="panel-caption">SIMULATED / SYNTHETIC</span></SectionHeader><div className="coverage-chart">{f.bands.map((b: any) => <div className="chart-column" key={b.band}><div className="column-bar" style={{ height: `${b.height}%` }}><span>{b.height}%</span></div><small>{b.band}</small></div>)}</div></div>
     <div className="panel heat-panel"><SectionHeader title="Exclusion concentration"><StatusPill tone="muted">SYNTHETIC DATA</StatusPill></SectionHeader><div className="heatmap">{f.heatmap.map((v: number, i: number) => <i key={i} className={`heat-${v}`} />)}</div><div className="heat-legend"><span>Lower</span><i /><i /><i /><i /><i /><span>Higher</span></div></div>
     <div className="panel fairness-note"><span className="eyebrow sage-text">FAIRNESS INDICATOR</span><strong>{Math.round(f.score)} <small>/ 100</small></strong><p>{f.note}</p></div></div>
 }
@@ -250,7 +340,7 @@ function Fairness({ simId }: { simId: string }) {
 /* ───────────────────────── What-If Lab ───────────────────────── */
 function WhatIf({ ctx, onExplain }: { ctx: Ctx; onExplain: () => void }) {
   const cfg = ctx.policy?.whatIf
-  const sim = ctx.ov.data?.simulation
+  const sim = currentOverview(ctx)?.simulation
   const [val, setVal] = useState<number>(cfg?.default ?? 0)
   const [scenario, setScenario] = useState<string>(cfg?.prompt ?? '')
   const [nl, setNl] = useState<any>(null)
@@ -316,6 +406,53 @@ function ExplainChat({ onClose, simId }: { onClose: () => void; simId?: string }
     <div className="chat-input"><input aria-label="Ask EDGECASE" value={message} onChange={event => setMessage(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.keyCode !== 229) sendMessage() }} placeholder="Ask about cliffs, conflicts, fairness or this change" /><button type="button" className="button primary" onClick={sendMessage} disabled={busy}>Send</button></div></div></div>
 }
 
+/* ───────────────────────── Policy Advisory ───────────────────────── */
+function PolicyAdvisory({ ctx }: { ctx: Ctx }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [data, setData] = useState<any>(null)
+  const [loadedFor, setLoadedFor] = useState('')
+  const requestKey = `${ctx.slug}:${ctx.simId ?? ''}`
+
+  useEffect(() => {
+    if (!ctx.slug) return
+    const key = `${ctx.slug}:${ctx.simId ?? ''}`
+    let live = true
+    setBusy(true); setError('')
+    api.advisory(ctx.slug, ctx.simId)
+      .then(res => { if (live) { setData(res.data); setLoadedFor(key) } })
+      .catch(e => { if (live) { setError(errMsg(e)); setLoadedFor(key) } })
+      .finally(() => live && setBusy(false))
+    return () => { live = false }
+  }, [ctx.slug, ctx.simId])
+
+  if (loadedFor !== requestKey) return <div className="page-content"><Loading label="GENERATING POLICY ADVISORY" /></div>
+  if (error) return <div className="page-content"><ErrorBox message={error} /></div>
+  if (busy && !data) return <div className="page-content"><Loading label="GENERATING POLICY ADVISORY" /></div>
+  if (!data) return <div className="page-content"><div className="panel"><p className="empty-state">No advisory data is available for this policy yet.</p></div></div>
+
+  return <div className="page-content"><div className="page-intro"><div><span className="eyebrow sage-text">POLICY REVIEW / 05</span><h1>Policy Advisory</h1><p>Actionable recommendations for <strong>{data.policyName}</strong> based on the uploaded policy and latest simulation evidence.</p></div><StatusPill>{data.summary?.issuesDetected ?? 0} ISSUES</StatusPill></div>
+    <div className="panel" style={{ padding: 22 }}>
+      <span className="eyebrow">EXECUTIVE SUMMARY</span>
+      <h2>{data.summary?.issuesDetected ?? 0} issues detected.</h2>
+      <p className="panel-desc">The current policy contains {data.summary?.thresholdCliffs ?? 0} threshold cliffs, {data.summary?.ruleInteractions ?? 0} rule interactions and {data.summary?.ambiguousConditions ?? 0} ambiguous conditions. Fairness signal: {Math.round(data.summary?.fairnessScore ?? 0)}/100.</p>
+    </div>
+    <div className="reports-grid" style={{ marginTop: 18 }}>
+      {(data.findings ?? []).map((item: any, index: number) => <div className="report-card panel" key={`${item.category}-${index}`}>
+        <div className="report-icon"><Target size={18} /></div>
+        <h3>{item.category}</h3>
+        <p><strong>Severity:</strong> {item.severity}</p>
+        <p><strong>Rule:</strong> {item.currentPolicyRule || 'Not specified'}</p>
+        <p><strong>Evidence:</strong> {item.evidence}</p>
+        <p><strong>Affected population:</strong> {item.affectedPopulation}</p>
+        <p><strong>Recommendation:</strong> {item.suggestedChange}</p>
+        <p><strong>Why:</strong> {item.why ?? item.expectedEffect}</p>
+        <p><strong>Trade-off:</strong> {item.tradeoff}</p>
+      </div>)}
+    </div>
+  </div>
+}
+
 /* ───────────────────────── Reports ───────────────────────── */
 function Reports({ ctx }: { ctx: Ctx }) {
   const [busy, setBusy] = useState('')
@@ -323,7 +460,7 @@ function Reports({ ctx }: { ctx: Ctx }) {
   const [note, setNote] = useState('')
   const [tick, setTick] = useState(0)
   const list = useApi(() => api.reports(ctx.slug), [ctx.slug, tick])
-  const ov = ctx.ov.data
+  const ov = currentOverview(ctx)
   const simId: string | undefined = ov?.simulation.id
   const reports: any[] = list.data ?? []
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase()
@@ -363,7 +500,7 @@ function Reports({ ctx }: { ctx: Ctx }) {
 /* ───────────────────────── Shell ───────────────────────── */
 export default function Page() {
   const [page, setPage] = useState<Page>('Overview')
-  const [slug, setSlug] = useState(DEFAULT_SLUG)
+  const [slug, setSlug] = useState('')
   const [simId, setSimId] = useState<string | undefined>()
   const [pTick, setPTick] = useState(0)
   const [oTick, setOTick] = useState(0)
@@ -371,11 +508,20 @@ export default function Page() {
   const [chatOpen, setChatOpen] = useState(false)
 
   const pol = useApi(() => api.policies(), [pTick])
-  const ov = useApi(() => api.overview(slug, simId), [slug, simId, oTick])
   const policies: any[] = pol.data ?? []
+  useEffect(() => {
+    if (policies.length === 0) return
+    const uploaded = policies.filter(p => p.policyStatus === 'UPLOADED').sort((a, b) => String(b.uploadedAt ?? '').localeCompare(String(a.uploadedAt ?? '')))[0]
+    const preferred = uploaded ?? policies.find((p) => p.slug === DEFAULT_SLUG) ?? policies[0]
+    if (!slug) setSlug(preferred.slug)
+  }, [policies, slug])
+
+  const ov = useApi(() => api.overview(slug || DEFAULT_SLUG, simId), [slug, simId, oTick])
   const policy = policies.find(p => p.slug === slug)
-  const selectPolicy = (s: string) => { setSlug(s); setSimId(undefined) }
-  const ctx: Ctx = { ov, retry: () => { setOTick(t => t + 1); setPTick(t => t + 1) }, slug, simId, policy }
+  const selectPolicy = (s: string) => { setSlug(s); setSimId(undefined); setChatOpen(false) }
+  const activateUploadedPolicy = (s: string) => { setSlug(s); setSimId(undefined); setPTick(t => t + 1); setChatOpen(false) }
+  const selectSimulation = (id: string, policySlug: string) => { setSlug(policySlug); setSimId(id); setChatOpen(false) }
+  const ctx: Ctx = { ov, retry: () => { setOTick(t => t + 1); setPTick(t => t + 1) }, slug: slug || DEFAULT_SLUG, simId, policy }
   const select = (
     <select value={slug} onChange={e => selectPolicy(e.target.value)}>
       {policies.length === 0 && <option value={slug}>{slug}</option>}
@@ -389,9 +535,10 @@ export default function Page() {
       {pol.error && <div className="page-content" style={{ paddingBottom: 0 }}><ErrorBox message={pol.error} onRetry={ctx.retry} /></div>}
       {page === 'Overview' && <Overview ctx={ctx} setPage={setPage} />}
       {page === 'Policy Lab' && <PolicyLab ctx={ctx} policies={policies} selectPolicy={selectPolicy} refreshPolicies={() => setPTick(t => t + 1)} setPage={setPage} />}
-      {page === 'Simulation' && <Simulation ctx={ctx} setPage={setPage} onNewSim={setSimId} />}
+      {page === 'Simulation' && <Simulation ctx={ctx} setPage={setPage} onNewSim={setSimId} onPolicySelected={activateUploadedPolicy} onSimulationSelected={selectSimulation} />}
       {page === 'What-If Lab' && <WhatIf key={slug} ctx={ctx} onExplain={() => setChatOpen(true)} />}
+      {page === 'Policy Advisory' && <PolicyAdvisory ctx={ctx} />}
       {page === 'Reports' && <Reports ctx={ctx} />}
-      {chatOpen && <ExplainChat onClose={() => setChatOpen(false)} simId={ov.data?.simulation.id} />}
+      {chatOpen && <ExplainChat onClose={() => setChatOpen(false)} simId={ctx.simId ?? (ov.data?.policy?.slug === ctx.slug ? ov.data?.simulation.id : undefined)} />}
     </div></main>
 }

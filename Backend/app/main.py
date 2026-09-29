@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from . import ai
-from .api import ensure_baseline, router
+from .api import api_router, ensure_baseline, router
 from .config import settings
 from .store import AppError, store
 
@@ -62,6 +62,13 @@ async def _unhandled(_: Request, exc: Exception):
     return _err(500, "INTERNAL_ERROR", "Something went wrong on the server.")
 
 
+@app.get("/")
+@app.get("/api/v1")
+def api_root():
+    return {"success": True, "data": {"status": "ok", "service": "EDGECASE API", "version": "2.0.0",
+                                      "docs": "/docs", "health": "/health"}, "meta": {"route": "/"}}
+
+
 @app.get("/health")
 @app.get("/api/v1/health")
 def health():
@@ -70,3 +77,4 @@ def health():
 
 
 app.include_router(router)
+app.include_router(api_router)

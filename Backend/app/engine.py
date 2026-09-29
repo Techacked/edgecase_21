@@ -19,8 +19,8 @@ MAX_STORED_EDGE = 12000  # edge-case rows kept for browsing (counts are always e
 SAMPLE_CASES = 600       # ordinary (non-edge) rows kept so the table can show all/eligible/rejected
 REJECTED, ELIGIBLE, REVIEW = 0, 1, 2
 RESULT_NAMES = {REJECTED: "REJECTED", ELIGIBLE: "ELIGIBLE", REVIEW: "REVIEW"}
-EDGE_TYPES = {1: "POLICY_CLIFF", 2: "BOUNDARY_CASE", 3: "RULE_CONFLICT", 4: "EXCLUSION_RULE"}
-EDGE_SEVERITY = {1: "HIGH", 2: "MEDIUM", 3: "HIGH", 4: "MEDIUM"}
+EDGE_TYPES = {1: "POLICY_CLIFF", 2: "BOUNDARY_CASE", 3: "RULE_CONFLICT", 4: "EXCLUSION_RULE", 5: "MISSING_DATA"}
+EDGE_SEVERITY = {1: "HIGH", 2: "MEDIUM", 3: "HIGH", 4: "MEDIUM", 5: "MEDIUM"}
 
 
 # ───────────────────────── helpers ─────────────────────────
@@ -118,14 +118,40 @@ def build_population(policy: dict, n: int, seed: int, mode: str) -> dict[str, np
         top = [e for e in f["edges"] if math.isfinite(e)][-1]
         cols[f["variable"]] = _shape(rng.uniform(0, top * 1.4, n), vm[f["variable"]]["gen"])
 
-    canon, row = canonical_case(policy), 0        # deterministic boundary probes (T-step, T, T+step)
+    canon, row = canonical_case(policy), 0  # deterministic boundary probes (T-step, T, T+step)
     for r in nums:
         s = vm[r["var"]].get("step", 1)
-        for delta in (-s, 0, s):
+        for delta in (-2 * s, -s, 0, s, 2 * s):
+            if row >= n:
+                break
             for k, val in canon.items():
                 cols[k][row] = val
             cols[r["var"]][row] = _snap(r["value"] + delta, vm[r["var"]])
             row += 1
+
+    for v in policy["variables"]:
+        key = v["key"]
+        if row >= n:
+            break
+        if np.issubdtype(cols[key].dtype, np.number):
+            for value in (float(np.min(cols[key])), float(np.max(cols[key]))):
+                if row >= n:
+                    break
+                for other, canonical in canon.items():
+                    cols[other][row] = canonical
+                cols[key][row] = value
+                row += 1
+
+    for v in policy["variables"]:
+        if row >= n:
+            break
+        key = v["key"]
+        for other, canonical in canon.items():
+            cols[other][row] = canonical
+        if cols[key].dtype == bool:
+            cols[key] = cols[key].astype(object)
+        cols[key][row] = None if cols[key].dtype == object else np.nan
+        row += 1
     return cols
 
 
@@ -162,18 +188,34 @@ def _row(cols: dict, i: int) -> dict:
     out = {}
     for k, arr in cols.items():
         x = arr[i]
-        out[k] = bool(x) if isinstance(x, (np.bool_, bool)) else str(x) if isinstance(x, str) else tidy(x)
+        if x is None or isinstance(x, (float, np.floating)) and not math.isfinite(float(x)):
+            out[k] = None
+        else:
+            out[k] = bool(x) if isinstance(x, (np.bool_, bool)) else str(x) if isinstance(x, str) else tidy(x)
     return out
+
+
+def _missing_mask(values: np.ndarray) -> np.ndarray:
+    if values.dtype == object:
+        return np.fromiter(
+            (value is None or isinstance(value, (float, np.floating)) and not math.isfinite(float(value)) for value in values),
+            dtype=bool, count=len(values),
+        )
+    if np.issubdtype(values.dtype, np.number):
+        return ~np.isfinite(values)
+    return np.zeros(len(values), dtype=bool)
 
 
 def summary_text(policy: dict, attrs: dict) -> str:
     vm = vmap(policy)
     keys = policy.get("summary") or list(dict.fromkeys(r["var"] for r in policy["rules"]))[:3]
-    return " · ".join(fmt_value(vm[k], attrs[k]) for k in keys if k in attrs)
+    return " · ".join("Missing" if attrs[k] is None else fmt_value(vm[k], attrs[k]) for k in keys if k in attrs)
 
 
 def _reason(policy: dict, rules, attrs, res, fails, etype) -> str:
     vm = vmap(policy)
+    if etype == 5:
+        return "Required policy data is missing; this case needs manual review."
     if res == ELIGIBLE:
         return "Passes all rules by narrow margin."
     if res == REVIEW:
@@ -190,14 +232,20 @@ def _reason(policy: dict, rules, attrs, res, fails, etype) -> str:
 
 
 # ───────────────────────── main entry ─────────────────────────
-def run_simulation(policy: dict, mode: str, n: int, seed: int, policy_slug: str) -> dict:
+def run_simulation(policy: dict, mode: str, n: int, seed: int, policy_slug: str,
+                   population: dict[str, np.ndarray] | None = None) -> dict:
     t0 = dt.datetime.now(dt.timezone.utc)
     policy = copy.deepcopy(policy)
     rules = policy["rules"]
     vm = vmap(policy)
-    cols = build_population(policy, n, seed, mode)
+    cols = population if population is not None else build_population(policy, n, seed, mode)
     P = evaluate(rules, cols, n)
+    missing_by_var = {v["key"]: _missing_mask(cols[v["key"]]) for v in policy["variables"]}
+    for i, rule in enumerate(rules):
+        P[i, missing_by_var[rule["var"]]] = False
+    missing_any = np.logical_or.reduce(list(missing_by_var.values())) if missing_by_var else np.zeros(n, dtype=bool)
     res, fail, hard = classify(rules, P)
+    res[missing_any] = REVIEW
     nfail = fail.sum(0)
     eligible, rejected, review = res == ELIGIBLE, res == REJECTED, res == REVIEW
     E, Rj, Rv = int(eligible.sum()), int(rejected.sum()), int(review.sum())
@@ -220,6 +268,7 @@ def run_simulation(policy: dict, mode: str, n: int, seed: int, policy_slug: str)
     etype[single & excl_flag[first_fail]] = 4
     etype[single & numeric_flag[first_fail] & near[first_fail, np.arange(n)]] = 1
     etype[review] = 3
+    etype[missing_any] = 5
     edge_mask = etype > 0
     edge_count = int(edge_mask.sum())
 
@@ -391,7 +440,8 @@ def _conflict(ra, rb, affected, n, ctype, desc) -> dict:
 
 def _explain_case(policy, rules, attrs, res, fails, etype, rrule) -> str:
     kind = {1: "sits just past a hard eligibility cliff", 2: "passes only by a narrow margin",
-            3: "is caught between conflicting rules", 4: "is excluded by a single exclusion rule"}[etype]
+            3: "is caught between conflicting rules", 4: "is excluded by a single exclusion rule",
+            5: "has missing policy data and requires manual review"}[etype]
     tail = f" It fails {rrule['code']} ({rrule['description']})." if rrule else ""
     return f"This synthetic applicant {kind}.{tail} Small changes in declared values could flip the outcome."
 
@@ -401,10 +451,12 @@ def _fairness(policy, cols, eligible, not_elig, n, edge_count) -> dict:
     var = f["variable"]
     x = cols[var].astype(float)
     edges = np.array(f["edges"], float)
-    band = np.clip(np.digitize(x, edges[1:-1]), 0, len(f["labels"]) - 1)
+    valid_x = np.isfinite(x)
+    band = np.zeros(n, dtype=int)
+    band[valid_x] = np.clip(np.digitize(x[valid_x], edges[1:-1]), 0, len(f["labels"]) - 1)
     bands, rates = [], []
     for b, label in enumerate(f["labels"]):
-        m = band == b
+        m = (band == b) & valid_x
         cnt = int(m.sum())
         rate = pct(int((eligible & m).sum()), cnt, 0) if cnt else 0
         bands.append({"band": label, "height": int(rate), "count": cnt})
@@ -415,12 +467,16 @@ def _fairness(policy, cols, eligible, not_elig, n, edge_count) -> dict:
     score = int(max(0, min(100, round(100 - 100 * cv - 0.5 * pct(edge_count, n)))))
     # heatmap: 5 secondary-variable quantile rows × 7 primary-variable columns → exclusion level 0-4
     sec = cols[f.get("secondary", var)].astype(float)
-    cols7 = np.clip(np.digitize(x, np.linspace(0, top * 1.4, 8)[1:-1]), 0, 6)
-    rows5 = np.clip(np.digitize(sec, np.quantile(sec, [.2, .4, .6, .8])), 0, 4)
+    valid = valid_x & np.isfinite(sec)
+    cols7 = np.zeros(n, dtype=int)
+    cols7[valid_x] = np.clip(np.digitize(x[valid_x], np.linspace(0, top * 1.4, 8)[1:-1]), 0, 6)
+    rows5 = np.zeros(n, dtype=int)
+    if valid.any():
+        rows5[valid] = np.clip(np.digitize(sec[valid], np.quantile(sec[valid], [.2, .4, .6, .8])), 0, 4)
     grid = np.zeros((5, 7))
     for r in range(5):
         for c in range(7):
-            m = (rows5 == r) & (cols7 == c)
+            m = valid & (rows5 == r) & (cols7 == c)
             grid[r, c] = (not_elig & m).sum() / m.sum() if m.sum() >= 20 else 0
     cuts = np.quantile(grid[grid > 0], [.2, .4, .6, .8]) if (grid > 0).any() else [0, 0, 0, 0]
     heat = [int(np.digitize(v, cuts)) for v in grid.flatten()]
@@ -450,8 +506,11 @@ def what_if(sim: dict, rule_code: str | None, new_value: float, budget: dict) ->
     for r in changed:
         if r["code"] == target["code"]:
             r["value"] = new_value
+    missing_any = np.logical_or.reduce([_missing_mask(cols[v["key"]]) for v in policy["variables"]])
     base = classify(rules, evaluate(rules, cols, n))[0]
     alt = classify(changed, evaluate(changed, cols, n))[0]
+    base[missing_any] = REVIEW
+    alt[missing_any] = REVIEW
     b = {k: int((base == c).sum()) for k, c in (("eligible", ELIGIBLE), ("rejected", REJECTED), ("review", REVIEW))}
     a = {k: int((alt == c).sum()) for k, c in (("eligible", ELIGIBLE), ("rejected", REJECTED), ("review", REVIEW))}
     cost = budget["costPerEligibleCase"] * budget.get("unitMultiplier", 1)

@@ -28,14 +28,16 @@ Open http://localhost:3000 (start the backend first).
 | UI area | Endpoint |
 |---|---|
 | Policy dropdown / Policy Lab | GET /policies, GET /policies/{slug} |
-| Paste text / Upload PDF | POST /policies/extract-text, POST /policies/extract-pdf |
+| Paste text / Upload policy | POST /policies/extract-text, POST /policies/upload (PDF, DOCX, TXT) |
 | Confirm rules / edit rule | POST /policies/{slug}/confirm-rules, PATCH /policies/{slug}/rules/{id} |
 | Overview + Simulation header | GET /dashboard/overview |
-| Run Simulation | POST /simulations (mode: STRESS_TEST / BOUNDARY_SCAN / FAIRNESS_AUDIT) |
+| Generate policy-specific demo data | POST /policies/{slug}/generate-data |
+| Run uploaded policy simulation | POST /policies/{slug}/simulate (mode: STRESS_TEST / BOUNDARY_SCAN / FAIRNESS_AUDIT) |
+| Simulation history | GET /simulations |
 | Edge Cases table (filter + search) | GET /simulations/{id}/cases?filter=all\|eligible\|rejected\|edge&q= |
 | Cliffs / Conflicts / Fairness tabs | GET /simulations/{id}/cliffs, /conflicts, /fairness |
 | What-If Lab (slider + natural language) | POST /what-if |
-| Explain chat | POST /chat |
+| Explain chat / policy advisory | POST /chat, GET /policies/{slug}/advisory?simulationId= |
 | Reports | POST /reports, GET /reports, GET /reports/{id}/download |
 
-All data is synthetic and seeded (same seed gives identical results).
+The primary workflow is upload policy → extract and confirm rules → generate policy-specific demo data → simulate. Synthetic populations include threshold probes, extremes, and missing-data cases; missing required values are sent to manual review. Custom CSV/JSON/XLSX datasets remain available as an advanced option. All generated data is synthetic and seeded (same seed gives reproducible results).

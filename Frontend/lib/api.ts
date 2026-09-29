@@ -36,7 +36,8 @@ const q = (params: Record<string, string | number | undefined>) =>
 export const api = {
   policies: () => call<any[]>('/policies'),
   overview: (policySlug: string, simulationId?: string) => call('/dashboard/overview?' + q({ policySlug, simulationId })),
-  runSimulation: (policySlug: string, mode: string, populationSize = 100000) => post('/simulations', { policySlug, mode, populationSize }),
+  simulations: () => call<any[]>('/simulations'),
+  runSimulation: (policySlug: string, mode: string, populationSize = 100000, datasetId?: string) => post(`/policies/${policySlug}/simulate`, { policyId: policySlug, mode, populationSize, datasetId }),
   cases: (simId: string, filter: string, search: string) => call<any[]>(`/simulations/${simId}/cases?` + q({ filter, q: search, pageSize: 50 })),
   cliffs: (simId: string) => call<any[]>(`/simulations/${simId}/cliffs`),
   conflicts: (simId: string) => call<any[]>(`/simulations/${simId}/conflicts`),
@@ -44,11 +45,24 @@ export const api = {
   whatIf: (body: { simulationId: string; parameter?: string; newValue?: number; scenario?: string; explain?: boolean }) => post('/what-if', body),
   chat: (message: string, simulationId?: string) => post<{ reply: string }>('/chat', { message, simulationId }),
   extractText: (text: string) => post('/policies/extract-text', { text }),
+  uploadPolicy: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return call('/policies/upload', { method: 'POST', body: fd })
+  },
   extractPdf: (file: File) => {
     const fd = new FormData()
     fd.append('file', file)
     return call('/policies/extract-pdf', { method: 'POST', body: fd })
   },
+  generateSyntheticData: (slug: string, populationSize = 10000, seed = 12345) => post(`/policies/${slug}/generate-data`, { populationSize, seed }),
+  uploadDataset: (slug: string, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return call(`/policies/${slug}/datasets`, { method: 'POST', body: fd })
+  },
+  listDatasets: (slug: string) => call<any[]>(`/policies/${slug}/datasets`),
+  advisory: (slug: string, simulationId?: string) => call(`/policies/${slug}/advisory?` + q({ simulationId })),
   confirmRules: (slug: string) => post(`/policies/${slug}/confirm-rules`),
   createReport: (simulationId: string, reportType: string) => post('/reports', { simulationId, reportType }),
   reports: (policySlug: string) => call<any[]>('/reports?' + q({ policySlug })),

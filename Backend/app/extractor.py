@@ -5,6 +5,7 @@ configured, ai.extract_rules_ai() is tried first and this parser is the fallback
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import re
 import uuid
 
@@ -14,11 +15,23 @@ from .fmt import compact_inr
 # key, display name, type, unit, fmt, step, keyword regex
 KNOWN = [
     ("cgpa", "CGPA", "NUMBER", "", "CGPA {}", 0.1, r"\bcgpa\b|\bgpa\b|grade point"),
+    ("attendance", "Attendance", "NUMBER", "%", "{}%", 0.1, r"\battendance\b|\battended\b"),
+    ("student_year", "Student Year", "NUMBER", "year", "Year {}", 1, r"student year|year of study|academic year"),
     ("electricity_units", "Electricity Consumption", "NUMBER", "units/yr", "{:,} units", 1, r"electricity|power consumption"),
     ("family_size", "Family Size", "NUMBER", "", "Family {}", 1, r"family size|household size|number of (family )?members"),
+    ("children_count", "Number of Children", "NUMBER", "", "{} children", 1, r"number of children|children count|child count"),
     ("age", "Age", "NUMBER", "years", "Age {}", 1, r"\bage\b|years old|years of age"),
     ("income_annual", "Annual Family Income", "NUMBER", "₹", "inr", 1, r"income|earning"),
-    ("delhi_resident", "Delhi Residency", "BOOLEAN", "", ["Delhi resident", "Non-resident"], 1, r"resident|reside|domicile"),
+    ("citizenship_verified", "Citizenship Verified", "BOOLEAN", "", ["Verified", "Not verified"], 1, r"citizenship|citizen(ship)? verified"),
+    ("identity_verified", "Identity Verified", "BOOLEAN", "", ["Verified", "Not verified"], 1, r"identity.*(verified|document|proof)"),
+    ("address_verified", "Address Verified", "BOOLEAN", "", ["Verified", "Not verified"], 1, r"address.*(verified|proof)"),
+    ("jurisdiction_match", "Jurisdiction Match", "BOOLEAN", "", ["Match", "No match"], 1, r"jurisdiction|constituency match|district match"),
+    ("duplicate_flag", "Duplicate Record", "BOOLEAN", "", ["Duplicate", "Not duplicate"], 1, r"duplicate|multiple registration"),
+    ("deceased_flag", "Deceased Status", "BOOLEAN", "", ["Deceased", "Living"], 1, r"deceased|reported dead"),
+    ("disability_status", "Disability Status", "BOOLEAN", "", ["Has disability", "No disability"], 1, r"disability|disabled"),
+    ("ration_card_status", "Ration Card Status", "BOOLEAN", "", ["Valid card", "No valid card"], 1, r"ration card|food card"),
+    ("delhi_resident", "Delhi Residency", "BOOLEAN", "", ["Delhi resident", "Non-resident"], 1, r"delhi|\bnct\b|national capital territory"),
+    ("residency", "Residency", "BOOLEAN", "", ["Resident", "Non-resident"], 1, r"\bresidency\b|\bresident\b|domicile|\breside\b"),
     ("owns_four_wheeler", "Vehicle Ownership", "BOOLEAN", "", ["Owns car", "No car"], 1, r"four[- ]?wheeler|\bcar\b|vehicle"),
     ("govt_employee", "Government Employment", "BOOLEAN", "", ["Govt employee", "Non-govt"], 1, r"government (employ|servant|job)|govt\.? employ"),
     ("income_tax_payer", "Income Tax Status", "BOOLEAN", "", ["Taxpayer", "Non-taxpayer"], 1, r"income[- ]tax|taxpayer"),
@@ -32,7 +45,8 @@ SHORT = {"cgpa": "Academic performance", "electricity_units": "Electricity consu
          "income_tax_payer": "Income tax status", "financial_need": "Financial need",
          "owns_property": "Property status", "voter_registered": "Voter status"}
 RULE_TYPE = {"owns_four_wheeler": "EXCLUSION", "govt_employee": "EXCLUSION", "income_tax_payer": "EXCLUSION",
-             "owns_property": "EXCLUSION", "financial_need": "CONDITIONAL"}
+             "owns_property": "EXCLUSION", "duplicate_flag": "EXCLUSION", "deceased_flag": "EXCLUSION",
+             "financial_need": "CONDITIONAL"}
 
 GE_STRONG = r"≥|>=|not less than|no less than|at least|minimum|not below|not under"
 LE = r"≤|<=|not exceed|not more than|no more than|not greater than|at most|up to|less than|below|under|maximum|within"
@@ -88,7 +102,9 @@ def _parse_sentence(s: str) -> list[dict]:
                     if amt is not None:
                         return [_rule(key, op, amt, s, 97)]
             continue
-        value = not NEG.search(low)
+        if not re.search(r"\b(must|shall|required|eligible|prohibited|excluded|cannot|not|no|without)\b", low):
+            continue
+        value = not NEG.search(low) and not re.search(r"\b(false|absent|unverified)\b", low)
         return [_rule(key, "==", value, s, 94 if NEG.search(low) else 95)]
     return []
 
@@ -118,7 +134,7 @@ def _describe(r: dict, meta) -> str:
 
 
 def build_custom_policy(title: str, text: str, raw_rules: list[dict], source_type: str,
-                        ocr: float | None, deterministic: bool) -> dict:
+                        ocr: float | None, deterministic: bool, source_file_name: str | None = None) -> dict:
     slug = f"custom-{uuid.uuid4().hex[:8]}"
     rules, variables, seen = [], [], set()
     for i, r in enumerate(raw_rules, 1):
@@ -148,8 +164,20 @@ def build_custom_policy(title: str, text: str, raw_rules: list[dict], source_typ
         fairness = {"variable": v0, "edges": [0, 0.5, INF], "labels": ["No", "Yes"], "secondary": v0}
         primary = rules[0]["code"]
     now = dt.datetime.now(dt.timezone.utc).isoformat()
+    low_text = text.lower()
+    effective = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    domain_terms = ("ration", "food", "scholarship", "education", "health", "medical", "housing", "transport", "employment")
+    domain = next((term for term in domain_terms if term in f"{title} {text}".lower()), "general")
+    sentences = [part.strip() for part in re.split(r"[\n;.]+", text) if part.strip()]
+    benefits = [part for part in sentences if re.search(r"benefit|subsid|grant|assistance|support|allowance", part, re.I)]
+    exceptions = [part for part in sentences if re.search(r"except|unless|exempt|exception", part, re.I)]
+    ambiguities = sorted({term for term in ("reasonable", "special circumstances", "priority cases", "additional support", "may receive", "normally eligible") if term in low_text})
     return {
         "slug": slug, "name": title, "description": "Custom policy extracted from user-supplied text.",
+        "policyDescription": text[:1000], "policyVersion": "1.0", "effectiveDate": effective.group(1) if effective else None,
+        "policyDomain": domain, "sourceFileName": source_file_name, "uploadedAt": now,
+        "policyHash": hashlib.sha256(text.encode("utf-8")).hexdigest(), "policyStatus": "UPLOADED",
+        "benefits": benefits, "exceptions": exceptions, "ambiguousTerms": ambiguities,
         "department": None, "category": "Custom", "authority": "User-supplied policy document",
         "variables": variables, "rules": rules, "primary": primary,
         "summary": list(dict.fromkeys(r["var"] for r in rules))[:3], "fairness": fairness,
